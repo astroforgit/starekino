@@ -217,14 +217,29 @@ var
 
     guy_x : byte = 60; guy_y : byte = 68;  // Not used anymore (was for background drawing)
     guy_oldx : byte; guy_oldy : byte;  // Not used anymore
-    guy_px0 : byte = 120;  // Horizontal position for left sprite
-    guy_px1 : byte = 128;  // Horizontal position for right sprite (8 pixels right, adjacent)
+    guy_px0 : byte = 80;   // Horizontal position for left sprite (FIXED - no left/right movement)
+    guy_px1 : byte = 88;   // Horizontal position for right sprite (8 pixels right, adjacent)
     guy_py : byte = 130;   // Vertical position - lower under buildings (60 bytes = 60 scanlines, at 130-189)
-    guy_base_py : byte = 130;  // Base Y position (ground level)
-    guy_jump_height : byte = 0;  // Current jump height (0 = on ground)
-    guy_jump_velocity : shortint = 0;  // Jump velocity (positive = up, negative = down)
+    guy_base_py : byte = 130;  // Base Y position (ground level) - this is 'bottom' in Mr. Hoppe
 
+    // Jump physics (Mr. Hoppe variables)
+    sy : smallint = 0;     // Vertical speed (negative = up, positive = down)
+    cy : byte = 0;         // Sub-pixel counter for smooth movement
+    fly : boolean = false; // Is player in the air?
+    jump : boolean = false; // Is player charging jump?
+    jumpforce : byte = 0;  // Jump force being charged (10-70)
 
+    // Obstacles (walls) - using missiles M0-M3
+    wall_x : array[0..3] of byte;      // Horizontal positions of 4 walls
+    wall_h : array[0..3] of byte;      // Heights of 4 walls (in pixels)
+    wall_wait : array[0..3] of byte;   // Wait time before spawning next wall
+    last_wall : byte = 0;              // Spacing between walls
+    difficulty : byte = 0;             // Difficulty level (affects wall spacing)
+
+    // Game state
+    energy : byte = 80;                // Player energy (0-80)
+    score : word = 0;                  // Player score
+    gameover_flag : boolean = false;   // Game over flag
 
 	fntTable: array [0..29] of byte;
     //  = (
@@ -351,10 +366,11 @@ end;
 
 procedure NextFrame;
 begin
-  // Clear player memory before drawing
-  // SINGLE-LINE RESOLUTION: Player 0 at 1024, Player 1 at 1280 (256 bytes each)
-  FillByte(Pointer(PMGBASE + 1024 + guy_py), _GUY_HEIGHT, 0);        // Clear Player 0 sprite area
-  FillByte(Pointer(PMGBASE + 1280 + guy_py), _GUY_HEIGHT, 0);        // Clear Player 1 sprite area
+  // Clear player memory before drawing - clear ENTIRE vertical range to prevent trails
+  // Clear from guy_base_py - 80 (max jump height) to guy_base_py + _GUY_HEIGHT
+  // This ensures we clear old sprite data when player moves vertically
+  FillByte(Pointer(PMGBASE + 1024 + guy_base_py - 80), 80 + _GUY_HEIGHT, 0);  // Clear Player 0 sprite area
+  FillByte(Pointer(PMGBASE + 1280 + guy_base_py - 80), 80 + _GUY_HEIGHT, 0);  // Clear Player 1 sprite area
 
   // Draw player based on guyframe (1-6)
   case guyframe of
@@ -426,23 +442,152 @@ end;
 
 procedure Update_Jump;
 begin
-    // Only update if jumping
-    if guy_jump_velocity <> 0 then begin
-        // Apply gravity
-        guy_jump_velocity := guy_jump_velocity - 1;
+    // Jump physics - EXACT Mr. Hoppe algorithm
+    // sy = vertical speed (negative = up, positive = down)
+    // cy = sub-pixel counter (for smooth movement)
 
-        // Update height
-        guy_jump_height := guy_jump_height + guy_jump_velocity;
-
-        // Check if landed
-        if guy_jump_height <= 0 then begin
-            guy_jump_height := 0;
-            guy_jump_velocity := 0;
+    // Calculate player's vertical movement
+    if sy > 0 then begin  // Falling
+        cy := cy + sy;
+        guy_py := guy_py + (cy shr 5);  // Divide by 32 for smooth movement
+        if (guy_py >= guy_base_py) then begin // Reached ground
+            sy := 0;
+            cy := 0;
+            fly := false;
+            guy_py := guy_base_py;
         end;
     end;
 
-    // Always update Y position based on jump height
-    guy_py := guy_base_py - guy_jump_height;
+    if sy < 0 then begin // Jumping up
+        cy := cy - sy;
+        guy_py := guy_py - (cy shr 5);  // Divide by 32 for smooth movement
+        if sy = 0 then sy := 1; // Reached top = start falling
+    end;
+
+    cy := cy and %11111;  // Keep cy in range 0-31
+    inc(sy);  // Apply gravity AFTER movement calculation
+end;
+
+// Display energy bar at top of screen
+procedure ShowEnergy;
+var
+    i: byte;
+    energy_blocks: byte;
+begin
+    // Energy bar: 40 characters wide, each character = 2 energy points
+    // Energy ranges from 0-80, so 0-40 blocks
+    energy_blocks := energy shr 1;  // Divide by 2
+
+    // Display energy bar at screen memory location
+    // Using BACKGROUND_MEM as base, add offset for top line
+    for i := 0 to 39 do begin
+        if i < energy_blocks then begin
+            poke(BACKGROUND_MEM + 40 + i, $4E);  // Energy block character
+        end else begin
+            poke(BACKGROUND_MEM + 40 + i, 0);    // Empty space
+        end;
+    end;
+end;
+
+// Display score at top of screen
+procedure ShowScore;
+var
+    i: byte;
+begin
+    // Convert score to string and display at top right
+    // For now, just display the score value
+    // Position at BACKGROUND_MEM + 2 (top left area)
+
+    // Simple score display - just show numeric value
+    // We'll use the built-in character set
+    poke(BACKGROUND_MEM + 2, (score div 10000) mod 10 + 48);  // Ten thousands
+    poke(BACKGROUND_MEM + 3, (score div 1000) mod 10 + 48);   // Thousands
+    poke(BACKGROUND_MEM + 4, (score div 100) mod 10 + 48);    // Hundreds
+    poke(BACKGROUND_MEM + 5, (score div 10) mod 10 + 48);     // Tens
+    poke(BACKGROUND_MEM + 6, score mod 10 + 48);              // Ones
+end;
+
+// Check collision between player and walls
+procedure CheckCollision;
+var
+    collision: byte;
+begin
+    // Read collision registers
+    // P0PL = Player 0 to Playfield collision ($D004)
+    // P1PL = Player 1 to Playfield collision ($D005)
+    // M0PL through M3PL = Missile to Player collision ($D000-$D003)
+
+    // Check if any player sprite hit any missile
+    collision := peek($D00C) or peek($D00D);  // P0PM (player 0 to missile) and P1PM (player 1 to missile)
+
+    if (collision <> 0) and (energy > 0) and not gameover_flag then begin
+        // Collision detected!
+        Dec(energy);
+
+        // Flash effect or damage animation could go here
+
+        // Check if energy depleted
+        if energy = 0 then begin
+            gameover_flag := true;
+        end;
+
+        // Update energy display
+        ShowEnergy;
+    end;
+
+    // Clear collision registers
+    poke($D01E, $FF);  // HITCLR - clear all collision registers
+end;
+
+// Set wall height for a specific missile
+procedure SetWallHeight(wall_num, height: byte);
+var
+    y_pos: byte;
+    vram_addr: word;
+begin
+    // Missiles are at PMGBASE + 768 (single-line resolution)
+    // Clear entire missile column first (from ground up to max height)
+    FillByte(Pointer(PMGBASE + 768 + guy_base_py - 72), 72, 0);
+
+    // Draw wall from ground level upward
+    // Each missile uses specific bits: M0=%00000011, M1=%00001100, M2=%00110000, M3=%11000000
+    for y_pos := 0 to height - 1 do begin
+        vram_addr := PMGBASE + 768 + guy_base_py - y_pos;  // Start from ground level, go up
+        case wall_num of
+            0: poke(vram_addr, peek(vram_addr) or %00000011);  // M0
+            1: poke(vram_addr, peek(vram_addr) or %00001100);  // M1
+            2: poke(vram_addr, peek(vram_addr) or %00110000);  // M2
+            3: poke(vram_addr, peek(vram_addr) or %11000000);  // M3
+        end;
+    end;
+end;
+
+// Move walls from right to left - EXACT Mr. Hoppe algorithm
+procedure MoveWalls;
+var
+    wall_num: byte;
+    rnd_val: byte absolute $D20A;  // Random number generator
+begin
+    // Move walls - EXACT Mr. Hoppe code (lines 166-179)
+    for wall_num := 0 to 3 do
+        if wall_wait[wall_num] = 0 then begin
+            dec(wall_x[wall_num]);
+            if (wall_x[wall_num] = 0) and not gameover_flag then begin
+                wall_x[wall_num] := 255;
+                wall_wait[wall_num] := last_wall + 9 + (rnd_val mod (12 + difficulty));
+                last_wall := wall_wait[wall_num];
+                wall_h[wall_num] := ((rnd_val mod 3) + 1) * 24;
+                SetWallHeight(wall_num, wall_h[wall_num]);
+            end;
+        end else dec(wall_wait[wall_num]);
+
+    // Update missile horizontal positions
+    hposm[0] := wall_x[0];
+    hposm[1] := wall_x[1];
+    hposm[2] := wall_x[2];
+    hposm[3] := wall_x[3];
+
+    if last_wall > 0 then dec(last_wall);
 end;
 
 procedure Joystick_Move;
@@ -452,50 +597,40 @@ begin
     // mask to read only 4 youngest bits
     joy_dir := joy_1 and 15;
 
-    case joy_dir of
-        joy_left:   begin
-                        // Move player sprite left
-                        if (guy_px0 > 48) then begin
-                            Dec(guy_px0, 2);
-                            Dec(guy_px1, 2);
-                        end;
-                        // Scroll background left
-                        if (hpos > 0) then begin
-                            dec(hpos);
-                        end;
-                        // Animate left (frames 4, 5, 6)
-                        if (guyframe < 4) or (guyframe > 6) then guyframe := 4;
-                        Inc(guyframe);
-                        if guyframe > 6 then guyframe:=4;
-                    end;
-        joy_right:  begin
-                        // Move player sprite right
-                        if (guy_px0 < 200) then begin
-                            Inc(guy_px0, 2);
-                            Inc(guy_px1, 2);
-                        end;
-                        // Scroll background right
-                        if (hpos < 339) then begin
-                            inc(hpos);
-                        end;
-                        // Animate right (frames 1, 2, 3)
-                        if (guyframe < 1) or (guyframe > 3) then guyframe := 1;
-                        Inc(guyframe);
-                        if guyframe > 3 then guyframe:=1;
-                    end;
-    end;
+    // NO LEFT/RIGHT MOVEMENT - Player auto-runs (background scrolls automatically)
+    // EXACT Mr. Hoppe jump control - charge and release
+    // ONLY USE JOYSTICK UP - NO FIRE BUTTON
 
-    // Check for jump (joystick up)
-    if (joy_dir = joy_up) or ((joy_dir = joy_left_up) or (joy_dir = joy_right_up)) then begin
-        // Start jump if on ground
-        if guy_jump_height = 0 then begin
-            guy_jump_velocity := 8;  // Initial jump velocity (higher = higher jump)
-            guy_jump_height := 1;    // Start jumping
+    if not fly then begin
+        // Joystick UP pressed on ground - start charging
+        if (joy_dir = joy_up) then begin
+            if not jump then begin
+                jump := true;
+                jumpforce := 10;  // MIN_JUMP_FORCE
+            end;
+            // UP kept on ground - increase jump force
+            if jump and (jumpforce < 70) then inc(jumpforce, 3);  // MAX_JUMP_FORCE = 70
+        end;
+
+        // Joystick UP released on ground - JUMP!
+        if jump and (joy_dir <> joy_up) then begin
+            jump := false;
+            fly := true;
+            sy := -jumpforce;  // Negative = going up
         end;
     end;
 
-    // Update jump physics
-    Update_Jump;
+    // Animate player
+    if not fly then begin
+        // On ground - running animation (frames 1, 2, 3)
+        if (vsc and 3) = 0 then begin  // Animate every 4 frames
+            Inc(guyframe);
+            if (guyframe > 3) or (guyframe < 1) then guyframe := 1;
+        end;
+    end else begin
+        // In air - jumping frame
+        guyframe := 1;  // Use frame 1 for jumping
+    end;
 
 end;
 
@@ -515,34 +650,101 @@ begin
 
     // Initialize player animation frame
     guyframe:=1;
+
+    // Initialize walls
+    wall_x[0] := 200;
+    wall_x[1] := 255;
+    wall_x[2] := 255;
+    wall_x[3] := 255;
+
+    wall_wait[0] := 0;   // First wall active immediately
+    wall_wait[1] := 30;  // Second wall waits
+    wall_wait[2] := 60;  // Third wall waits
+    wall_wait[3] := 90;  // Fourth wall waits
+
+    wall_h[0] := 48;     // First wall medium height
+    wall_h[1] := 24;
+    wall_h[2] := 72;
+    wall_h[3] := 48;
+
+    // Draw initial walls
+    SetWallHeight(0, wall_h[0]);
+
+    last_wall := 0;
+
+    // Initialize game state
+    energy := 80;
+    score := 0;
+    gameover_flag := false;
+    difficulty := 0;
+
+    // Initialize jump state (Mr. Hoppe variables)
+    sy := 0;
+    cy := 0;
+    fly := false;
+    jump := false;
+    jumpforce := 0;
+
+    // Display initial energy and score
+    ShowEnergy;
+    ShowScore;
+
     waitframe;
 
     i:=1;
     repeat
         Joystick_Move;
 
+        // Update jump physics every frame (must be called every frame, not just when joystick moves)
+        Update_Jump;
+
+        // Move walls (obstacles)
+        MoveWalls;
+
+        // Check collision between player and walls
+        CheckCollision;
+
+        // Update score (increase while flying - EXACT Mr. Hoppe)
+        if fly and not gameover_flag then begin
+            Inc(score);
+            if (score and 15) = 0 then begin
+                ShowScore;  // Update display every 16 frames
+                // Update difficulty based on score (EXACT Mr. Hoppe formula)
+                difficulty := (score shr 8) shr 4;  // peek(word(@score)+1) shr 4
+                if difficulty > 10 then difficulty := 10;  // Cap difficulty
+            end;
+        end;
+
         setBackgroundOffset(hpos);
-        
+
         Nextframe;
 
-        // Set PMG horizontal positions
+        // Set PMG horizontal positions (FIXED - no left/right movement)
         hposp[0]:=guy_px0;  // Player sprite 0
         hposp[1]:=guy_px1;  // Player sprite 1
         hposp[2]:=bat_px0;  // Enemy bat sprite 0 (disabled)
         hposp[3]:=bat_px1;  // Enemy bat sprite 1 (disabled)
 
-        // Player does NOT move automatically - only moves with joystick in Joystick_Move
-        // Enemies are disabled for now
-        // Inc(bat_px0); Inc(bat_px1);
-        // Dec(sreel_px0); Dec(sreel_px1);
+        // AUTO-RUN: Background scrolls automatically from left to right
+        if (hpos < 339) then begin
+            inc(hpos);  // Scroll background right (player appears to run forward)
+        end else begin
+            hpos := 0;  // Loop background
+        end;
 
         if (vsc and 7) = 0 then Inc(frame);
         // if (vsc and 2) = 0 then Guy_Anim;
         if frame > 4 then frame := 1;
         Inc(i);
         if i = _SIZE then i:=1;
-    
-        if (strig0 = 0) then gamestatus:= 2;
+
+        // Check for game over
+        if gameover_flag then begin
+            gamestatus := 2;  // Go to end game screen
+        end;
+
+        // Manual exit to end game (for testing)
+        // if (strig0 = 0) then gamestatus:= 2;
         waitframe;
 
     until gamestatus <> 1;
@@ -653,9 +855,21 @@ begin
     pcolr[2] := $00;  // Player 2 - unused
     pcolr[3] := $00;  // Player 3 - unused
 
+    // Missile colors (for walls/obstacles)
+    poke($D01A + 4, $34);  // Missile color - red/brown (same as buildings)
+
     // Player horizontal positions
     hposp[0] := guy_px0;
     hposp[1] := guy_px1;
+
+    // Missile horizontal positions (initialized off-screen)
+    hposm[0] := 255;
+    hposm[1] := 255;
+    hposm[2] := 255;
+    hposm[3] := 255;
+
+    // Missile sizes (double width for thicker walls)
+    sizem := $ff;  // All missiles double width
     hposp[2] := bat_px0;
     hposp[3] := bat_px1;
     
