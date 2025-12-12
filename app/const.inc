@@ -43,7 +43,7 @@ _SIZE = 84;
 
 // player size
 _GUY_WIDTH = 32;
-_GUY_HEIGHT = 60;
+_GUY_HEIGHT = 60;  // 60 bytes in single-line = 60 scanlines on screen
 
 joy_none	= 15;
 joy_up		= 14;

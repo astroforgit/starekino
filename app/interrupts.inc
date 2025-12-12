@@ -9,10 +9,11 @@ begin
     ;    lda #64 ; wait this number of lines
     ;@   cmp vcount
     ;    bpl @-
-        mva #$4f atari.colbk ; change backgroung color to white
+        mva #$0c atari.colbk ; change background color to gray (same as building spaces)
     };
-        hposp[0] := bat_px0;
-        hposp[1] := bat_px1;
+        // Keep guy sprite positions (Players 0 and 1 are now for the guy)
+        hposp[0] := guy_px0;
+        hposp[1] := guy_px1;
     asm {
         mwa #dli2 __dlivec
         plr ; restore registers
@@ -28,10 +29,11 @@ begin
     ;    lda #64 ; wait this number of lines
     ;@   cmp vcount
     ;    bpl @-
-         mva #$9f atari.colbk ; change backgroung color to white
+         mva #$0c atari.colbk ; change background color to gray (same as building spaces)
     };
-        hposp[0] := sreel_px0;
-        hposp[1] := sreel_px1;
+        // Keep guy sprite positions (Players 0 and 1 are now for the guy)
+        hposp[0] := guy_px0;
+        hposp[1] := guy_px1;
     asm {
         mwa #dli3 __dlivec
         plr ; restore registers
@@ -47,10 +49,11 @@ begin
     ;    lda #64 ; wait this number of lines
     ;@   cmp vcount
     ;    bpl @-
-        mva #$df atari.colbk ; change backgroung color to white
+        mva #$0c atari.colbk ; change background color to gray (same as building spaces)
     };
-        hposp[0] := bike_px0;
-        hposp[1] := bike_px1;
+        // Keep guy sprite positions (Players 0 and 1 are now for the guy)
+        hposp[0] := guy_px0;
+        hposp[1] := guy_px1;
     asm {
         mwa #dli4 __dlivec
 
@@ -67,10 +70,11 @@ begin
     ;    lda #64 ; wait this number of lines
     ;@   cmp vcount
     ;    bpl @-
-        mva #$ff atari.colbk ; change backgroung color to white
+        mva #$0c atari.colbk ; change background color to gray (same as building spaces)
     };
-        hposp[0] := 0;
-        hposp[1] := 0;
+        // Keep guy sprite positions (Players 0 and 1 are now for the guy)
+        hposp[0] := guy_px0;
+        hposp[1] := guy_px1;
     asm {
         mwa #dli1 __dlivec
 
