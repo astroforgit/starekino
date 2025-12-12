@@ -219,8 +219,8 @@ var
     guy_oldx : byte; guy_oldy : byte;  // Not used anymore
     guy_px0 : byte = 80;   // Horizontal position for left sprite (FIXED - no left/right movement)
     guy_px1 : byte = 88;   // Horizontal position for right sprite (8 pixels right, adjacent)
-    guy_py : byte = 130;   // Vertical position - lower under buildings (60 bytes = 60 scanlines, at 130-189)
-    guy_base_py : byte = 130;  // Base Y position (ground level) - this is 'bottom' in Mr. Hoppe
+    guy_py : byte = 160;   // Vertical position - lower on screen (60 bytes = 60 scanlines, at 160-219)
+    guy_base_py : byte = 160;  // Base Y position (ground level) - this is 'bottom' in Mr. Hoppe
 
     // Jump physics (Mr. Hoppe variables)
     sy : smallint = 0;     // Vertical speed (negative = up, positive = down)
@@ -468,23 +468,46 @@ begin
     inc(sy);  // Apply gravity AFTER movement calculation
 end;
 
-// Display energy bar at top of screen
+// Display energy bar at top of screen - using graphics mode
 procedure ShowEnergy;
 var
-    i: byte;
-    energy_blocks: byte;
+    x_pos: byte;
+    energy_pixels: byte;
+    screen_addr: word;
+    remaining_pixels: byte;
 begin
-    // Energy bar: 40 characters wide, each character = 2 energy points
-    // Energy ranges from 0-80, so 0-40 blocks
-    energy_blocks := energy shr 1;  // Divide by 2
+    // Energy bar at very top of screen
+    // In graphics mode $F (320x192), we need to draw pixels directly
+    // Each byte = 8 pixels in mode F
+    // Energy 0-80, display as 80 pixels (10 bytes) at top of screen
 
-    // Display energy bar at screen memory location
-    // Using BACKGROUND_MEM as base, add offset for top line
-    for i := 0 to 39 do begin
-        if i < energy_blocks then begin
-            poke(BACKGROUND_MEM + 40 + i, $4E);  // Energy block character
+    energy_pixels := energy;  // 0-80 pixels
+
+    // Draw energy bar at top-right of screen (starting at x=240, which is byte 30 of 40)
+    // Screen width in mode F = 40 bytes (320 pixels / 8 pixels per byte)
+    // Draw 10 bytes (80 pixels) starting at byte 30
+    for x_pos := 0 to 9 do begin
+        screen_addr := BACKGROUND_MEM + 30 + x_pos;  // Top line, bytes 30-39
+
+        if (x_pos * 8) < energy_pixels then begin
+            // Calculate how many pixels to draw in this byte
+            if (energy_pixels - (x_pos * 8)) >= 8 then
+                poke(screen_addr, $FF)  // Full byte (8 pixels)
+            else begin
+                // Partial byte - draw remaining pixels
+                remaining_pixels := energy_pixels - (x_pos * 8);
+                case remaining_pixels of
+                    1: poke(screen_addr, $80);
+                    2: poke(screen_addr, $C0);
+                    3: poke(screen_addr, $E0);
+                    4: poke(screen_addr, $F0);
+                    5: poke(screen_addr, $F8);
+                    6: poke(screen_addr, $FC);
+                    7: poke(screen_addr, $FE);
+                end;
+            end;
         end else begin
-            poke(BACKGROUND_MEM + 40 + i, 0);    // Empty space
+            poke(screen_addr, 0);  // Empty
         end;
     end;
 end;
@@ -539,40 +562,47 @@ begin
     poke($D01E, $FF);  // HITCLR - clear all collision registers
 end;
 
-// Set wall height for a specific missile
+// Set wall height for a specific missile - EXACT Mr. Hoppe algorithm
 procedure SetWallHeight(wall_num, height: byte);
 var
-    y_pos: byte;
+    y_pos, mask: byte;
     vram_addr: word;
+    wall_bottom: byte;
 begin
-    // Missiles are at PMGBASE + 768 (single-line resolution)
-    // Clear entire missile column first (from ground up to max height)
-    FillByte(Pointer(PMGBASE + 768 + guy_base_py - 72), 72, 0);
+    // EXACT Mr. Hoppe setWallH procedure (lines 135-144)
+    // mask = %11 shl (wall * 2)
+    // This creates: M0=%00000011, M1=%00001100, M2=%00110000, M3=%11000000
+    mask := %11 shl (wall_num * 2);
 
-    // Draw wall from ground level upward
-    // Each missile uses specific bits: M0=%00000011, M1=%00001100, M2=%00110000, M3=%11000000
-    for y_pos := 0 to height - 1 do begin
-        vram_addr := PMGBASE + 768 + guy_base_py - y_pos;  // Start from ground level, go up
-        case wall_num of
-            0: poke(vram_addr, peek(vram_addr) or %00000011);  // M0
-            1: poke(vram_addr, peek(vram_addr) or %00001100);  // M1
-            2: poke(vram_addr, peek(vram_addr) or %00110000);  // M2
-            3: poke(vram_addr, peek(vram_addr) or %11000000);  // M3
-        end;
+    // Wall bottom should be at player's FEET level (guy_base_py + _GUY_HEIGHT)
+    // Player sprite: guy_py to guy_py + 60, so feet are at guy_base_py + 60
+    wall_bottom := guy_base_py + _GUY_HEIGHT;  // 160 + 60 = 220
+
+    // Loop through ALL possible wall heights (0 to 72)
+    for y_pos := 0 to 72 do begin
+        vram_addr := PMGBASE + 768 + wall_bottom - y_pos;  // Start from player's feet level, go up
+
+        // If within wall height, SET the bits; otherwise CLEAR the bits
+        // This preserves other missiles in the same byte!
+        if y_pos < height then
+            poke(vram_addr, peek(vram_addr) or mask)      // Set bits for this wall
+        else
+            poke(vram_addr, peek(vram_addr) and not mask); // Clear bits for this wall
     end;
 end;
 
-// Move walls from right to left - EXACT Mr. Hoppe algorithm
+// Move walls from right to left - FASTER than background
 procedure MoveWalls;
 var
     wall_num: byte;
     rnd_val: byte absolute $D20A;  // Random number generator
 begin
-    // Move walls - EXACT Mr. Hoppe code (lines 166-179)
+    // Move walls - Based on Mr. Hoppe but FASTER (2 pixels per frame instead of 1)
+    // This makes obstacles move faster than the background buildings
     for wall_num := 0 to 3 do
         if wall_wait[wall_num] = 0 then begin
-            dec(wall_x[wall_num]);
-            if (wall_x[wall_num] = 0) and not gameover_flag then begin
+            dec(wall_x[wall_num], 2);  // Move 2 pixels per frame (faster than background)
+            if (wall_x[wall_num] < 2) and not gameover_flag then begin
                 wall_x[wall_num] := 255;
                 wall_wait[wall_num] := last_wall + 9 + (rnd_val mod (12 + difficulty));
                 last_wall := wall_wait[wall_num];
