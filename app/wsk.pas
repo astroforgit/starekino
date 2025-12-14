@@ -1,3 +1,11 @@
+// ============================================================================
+// W Starym Kinie (In the Old Cinema)
+// ============================================================================
+// Atari 8-bit game - Mad-Pascal
+// Player runs automatically and jumps over obstacles
+// Based on Mr. Hoppe gameplay mechanics
+// ============================================================================
+
 program wsk;
 {$librarypath '../../blibs/'}
 {$librarypath '../../MADS/blibs/'}
@@ -5,7 +13,10 @@ uses atari, rmt, b_system, b_crt;
 
 const
 {$i const.inc}
+
 {$r resources.rc}
+
+// Title screen display list
 dlist_title: array [0..34] of byte = (
 		$70,$70,$70,$70,$70,$70,$70,$C2,lo(TITLEBACK_MEM),hi(TITLEBACK_MEM),
 		$82,$82,$82,$82,$82,$82,$82,$82,
@@ -13,251 +24,88 @@ dlist_title: array [0..34] of byte = (
 		$00,$00,$00,$00,$00,$00,
 		$41,lo(word(@dlist_title)),hi(word(@dlist_title))
 	);
+
 var
-    hpos : word = 0;
-    music : boolean;
-    msx : TRMT;
-    old_vbl,old_dli : Pointer;
-    i : byte;
-    frame, guyframe : byte;
-    offset_x : Word;
-    offset_y : Word;
-    gamestatus : Byte = 2;
-    tab: array [0..127] of byte; 
+    // ========================================================================
+    // Game State Variables
+    // ========================================================================
+    hpos : word = 0;           // Horizontal scroll position for background
+    music : boolean;           // Music on/off flag
+    msx : TRMT;                // RMT music player
+    frame, guyframe : byte;    // Animation frame counters
+    gamestatus : Byte = 2;     // Game status (2 = title screen)
+
+    // ========================================================================
+    // Hardware Registers (Absolute Addresses)
+    // ========================================================================
+    pcolr : array[0..3] of byte absolute $D012;   // Player colors (COLPM0-3)
+    hposp : array[0..3] of byte absolute $D000;   // Player horizontal positions
+    sizep : array[0..3] of byte absolute $D008;   // Player sizes
+    hposm : array[0..3] of byte absolute $D004;   // Missile horizontal positions
+    gtiactl	: byte absolute	$D01B;                // GTIA control (GPRIOR)
+    vsc : byte absolute $14;                      // Vertical sync counter (frame counter)
+
+    joy_1 : byte absolute $D300;                  // Joystick port 1
+    strig0 : byte absolute $D010;                 // Trigger button 0
 
 
-    pcolr : array[0..3] of byte absolute $D012;   // Player color
-    hposp : array[0..3] of byte absolute $D000;  // Player horizontal position
-    sizep : array[0..3] of byte absolute $D008;  // Player size
-    hposm : array[0..3] of byte absolute $D004;  // Missile horizontal position
-    gtiactl	: byte absolute	$D01B;
-    vsc : byte absolute $14;
+    // ========================================================================
+    // Sprite Data - Included from separate files
+    // ========================================================================
+    {$i sprites_guy.inc}      // Player sprite (guy) - 60 pixels, 6 frames
+    {$i sprites_bonus.inc}    // Bonus sprite (rolka/sreel) - 18 pixels, 4 frames
 
-    joy_1 : byte absolute $D300;
-    strig0 : byte absolute $D010;
+    // ========================================================================
+    // Player Position and Movement Variables
+    // ========================================================================
+    guy_px0 : byte = 80;          // Horizontal position for left sprite (FIXED)
+    guy_px1 : byte = 88;          // Horizontal position for right sprite (8 pixels right)
+    guy_py : byte = 160;          // Current vertical position (160-219)
+    guy_base_py : byte = 160;     // Base Y position (ground level)
 
-    // Player data
-    // Player PMG sprites (2 sprites, 60 pixels tall) - Frames 1-3: right-facing
-    // Full 60-byte sprite for single-line resolution - Frame 1 (right-facing)
-    guy_p0Frame1 : array[0.._GUY_HEIGHT - 1] of byte = (
-        $3C, $7E, $7E, $7E, $7E, $7F, $FF, $FF,
-        $7F, $7F, $FE, $FE, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FB,
-        $FB, $FB, $FB, $FB, $F9, $F9, $F9, $F9,
-        $F1, $F0, $FE, $FF);
-    guy_p1Frame1 : array[0.._GUY_HEIGHT - 1] of byte = (
-        $00, $00, $00, $00, $00, $80, $00, $00,
-        $00, $00, $00, $00, $00, $80, $C0, $E0,
-        $E0, $F0, $F8, $F8, $FC, $FC, $FC, $FC,
-        $FC, $FD, $76, $10, $90, $90, $98, $D9,
-        $D9, $C9, $EA, $EA, $EA, $EA, $EA, $F4,
-        $FC, $F8, $F0, $F0, $F0, $F0, $F0, $F0,
-        $F0, $F0, $F0, $F0, $F0, $F0, $F0, $F0,
-        $F0, $FE, $FF, $00);
-    // Frame 2 (right-facing)
-    guy_p0Frame2 : array[0.._GUY_HEIGHT - 1] of byte = (
-        $3C, $7E, $7E, $7E, $7E, $7F, $FF, $FF,
-        $7F, $7F, $FE, $FE, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FB,
-        $FB, $F9, $F9, $F9, $F8, $F8, $F8, $F8,
-        $F0, $F0, $FE, $FF);
-    guy_p1Frame2 : array[0.._GUY_HEIGHT - 1] of byte = (
-        $00, $00, $00, $00, $00, $80, $00, $00,
-        $00, $00, $00, $00, $00, $80, $80, $C0,
-        $E0, $F0, $F8, $F8, $F8, $FC, $FC, $FC,
-        $FC, $FD, $76, $10, $90, $90, $98, $D9,
-        $D9, $C9, $EA, $EA, $EA, $EA, $E8, $FC,
-        $FC, $F8, $F0, $F0, $F0, $F0, $F0, $F0,
-        $F8, $F8, $F8, $F8, $FC, $FC, $FC, $FC,
-        $7F, $7F, $78, $00);
-    // Frame 3 (right-facing)
-    guy_p0Frame3 : array[0.._GUY_HEIGHT - 1] of byte = (
-        $3C, $7E, $7E, $7E, $7E, $7F, $FF, $FF,
-        $7F, $7F, $FE, $FE, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FD, $FD, $FC, $FC, $FC, $F8,
-        $F8, $F8, $F8, $F8, $F8, $F8, $F8, $F8,
-        $F0, $F0, $FE, $FF);
-    guy_p1Frame3 : array[0.._GUY_HEIGHT - 1] of byte = (
-        $00, $00, $00, $00, $00, $80, $00, $00,
-        $00, $00, $00, $00, $00, $80, $80, $C0,
-        $E0, $F0, $F8, $F8, $F8, $FC, $FC, $FC,
-        $FC, $FD, $56, $10, $90, $90, $98, $D9,
-        $D9, $C9, $EA, $EA, $EA, $EA, $FE, $F4,
-        $FC, $FC, $FC, $FC, $FC, $FE, $FE, $FE,
-        $3F, $3F, $3F, $1F, $1F, $1F, $1F, $07,
-        $07, $00, $00, $00);
+    // ========================================================================
+    // Animation and Scrolling Variables
+    // ========================================================================
+    i : byte = 1;                 // Animation counter (1-84)
 
-    // Frame 4 (left-facing) - mirrored version of frame 1
-    guy_p0Frame4 : array[0.._GUY_HEIGHT - 1] of byte = (
-        $00, $00, $00, $00, $00, $01, $00, $00,
-        $00, $00, $00, $00, $00, $01, $03, $07,
-        $07, $0F, $1F, $1F, $3F, $3F, $3F, $3F,
-        $3F, $BF, $6E, $08, $09, $09, $19, $9B,
-        $9B, $93, $57, $57, $57, $57, $57, $2F,
-        $3F, $1F, $0F, $0F, $0F, $0F, $0F, $0F,
-        $0F, $0F, $0F, $0F, $0F, $0F, $0F, $0F,
-        $0F, $7F, $FF, $00);
-    guy_p1Frame4 : array[0.._GUY_HEIGHT - 1] of byte = (
-        $3C, $7E, $7E, $7E, $7E, $FE, $FF, $FF,
-        $FE, $FE, $7F, $7F, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FF, $FF, $FF, $FF, $FF, $DF,
-        $DF, $DF, $DF, $DF, $9F, $9F, $9F, $9F,
-        $8F, $0F, $7F, $FF);
-    // Frame 5 (left-facing) - mirrored version of frame 2
-    guy_p0Frame5 : array[0.._GUY_HEIGHT - 1] of byte = (
-        $00, $00, $00, $00, $00, $01, $00, $00,
-        $00, $00, $00, $00, $00, $01, $01, $03,
-        $07, $0F, $1F, $1F, $1F, $3F, $3F, $3F,
-        $3F, $BF, $6E, $08, $09, $09, $19, $9B,
-        $9B, $93, $57, $57, $57, $57, $17, $3F,
-        $3F, $1F, $0F, $0F, $0F, $0F, $0F, $0F,
-        $1F, $1F, $1F, $1F, $3F, $3F, $3F, $3F,
-        $FE, $FE, $1E, $00);
-    guy_p1Frame5 : array[0.._GUY_HEIGHT - 1] of byte = (
-        $3C, $7E, $7E, $7E, $7E, $FE, $FF, $FF,
-        $FE, $FE, $7F, $7F, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FF, $FF, $FF, $FF, $FF, $DF,
-        $DF, $9F, $9F, $9F, $1F, $1F, $1F, $1F,
-        $0F, $0F, $7F, $FF);
-    // Frame 6 (left-facing) - mirrored version of frame 3
-    guy_p0Frame6 : array[0.._GUY_HEIGHT - 1] of byte = (
-        $00, $00, $00, $00, $00, $01, $00, $00,
-        $00, $00, $00, $00, $00, $01, $01, $03,
-        $07, $0F, $1F, $1F, $1F, $3F, $3F, $3F,
-        $3F, $BF, $6A, $08, $09, $09, $19, $9B,
-        $9B, $93, $57, $57, $57, $57, $7F, $2F,
-        $3F, $3F, $3F, $3F, $3F, $7F, $7F, $7F,
-        $FC, $FC, $FC, $F8, $F8, $F8, $F8, $E0,
-        $E0, $00, $00, $00);
-    guy_p1Frame6 : array[0.._GUY_HEIGHT - 1] of byte = (
-        $3C, $7E, $7E, $7E, $7E, $FE, $FF, $FF,
-        $FE, $FE, $7F, $7F, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF,
-        $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF,
-        $FF, $FF, $BF, $BF, $3F, $3F, $3F, $1F,
-        $1F, $1F, $1F, $1F, $1F, $1F, $1F, $1F,
-        $0F, $0F, $7F, $FF);
 
-    // Bonus sprite (rolka) - USING EXISTING SREEL SPRITE DATA (18 pixels tall)
-    // NOTE: sreel sprite data is already defined below (sreel_p0Frame1-4, sreel_p1Frame1-4)
-    // We'll use Players 2 and 3 for the bonus (like Mr. Hoppe)
+    // ========================================================================
+    // Jump Physics Variables (Mr. Hoppe algorithm)
+    // ========================================================================
+    sy : smallint = 0;        // Vertical speed (negative = up, positive = down)
+    cy : byte = 0;            // Sub-pixel counter for smooth movement (0-31)
+    fly : boolean = false;    // Is player in the air?
+    jump : boolean = false;   // Is player charging jump?
+    jumpforce : byte = 0;     // Jump force being charged (10-70)
 
-    // Player 0 data
-    bat_p0Frame1 : array[0.._HEIGHT - 1] of byte =
-        ($00, $00, $2, $2, $3, $F, $3E, $7F, $7F, $F3, $C3, $80, $00, $00, $00, $00, $00, $00);
-    bat_p0Frame2 : array[0.._HEIGHT - 1] of byte = 
-        ($00, $00, $00, $2, $C2, $73, $7B, $3E, $3F, $1F, $17, $3, $00, $00, $00, $00, $00, $00);
-    bat_p0Frame3 : array[0.._HEIGHT - 1] of byte = 
-        ($00, $00, $2, $2, $3, $F, $3E, $7F, $7F, $F3, $C3, $80, $00, $00, $00, $00, $00, $00);
-    bat_p0Frame4 : array[0.._HEIGHT - 1] of byte = 
-        ($00, $00, $00, $2, $C2, $73, $7B, $3E, $3F, $1F, $17, $3, $00, $00, $00, $00, $00, $00);
-
-    // Player 1 data
-    bat_p1Frame1 : array[0.._HEIGHT - 1] of byte = 
-        ($00, $00, $40, $40, $C0, $F0, $BC, $FE, $FE, $CF, $C3, $1, $00, $00, $00, $00, $00, $00);
-    bat_p1Frame2 : array[0.._HEIGHT - 1] of byte = 
-        ($00, $00, $00, $40, $43, $CE, $DE, $BC, $FC, $F8, $E8, $C0, $00, $00, $00, $00, $00, $00);
-    bat_p1Frame3 : array[0.._HEIGHT - 1] of byte = 
-        ($00, $00, $40, $40, $C0, $F0, $BC, $FE, $FE, $CF, $C3, $1, $00, $00, $00, $00, $00, $00);
-    bat_p1Frame4 : array[0.._HEIGHT - 1] of byte = 
-        ($00, $00, $00, $40, $43, $CE, $DE, $BC, $FC, $F8, $E8, $C0, $00, $00, $00, $00, $00, $00);
-
-    bat_pos: array[0.._SIZE - 1] of byte =
-        (0,0,0,0,0,0,0,0,0,2,2,2,4,4,4,6,6,6,8,8,8,9,9,10,9,9,8,8,8,6,6,6,4,4,4,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,2,2,2,4,4,4,6,6,6,8,8,8,9,9,10,9,9,8,8,8,6,6,6,4,4,4,0,0,0,0,0,0,0,0);
-
-    // Player 0 data
-    sreel_p0Frame1 : array[0.._HEIGHT - 1] of byte = 
-        ($00, $00, $00, $3, $F, $1B, $11, $3B, $3E, $3E, $3B, $11, $1B, $F, $33, $00, $00, $00);
-    sreel_p0Frame2 : array[0.._HEIGHT - 1] of byte = 
-        ($00, $00, $00, $3, $F, $1E, $1F, $37, $22, $36, $3F, $1E, $1C, $E, $3, $00, $00, $00);
-
-    sreel_p0Frame3 : array[0.._HEIGHT - 1] of byte = 
-        ($00, $00, $00, $3, $F, $1B, $11, $3B, $3E, $3E, $3B, $11, $1B, $F, $3, $00, $00, $00);
-
-    sreel_p0Frame4 : array[0.._HEIGHT - 1] of byte = 
-        ($00, $00, $00, $23, $2F, $3E, $1F, $37, $22, $36, $3F, $1E, $1C, $E, $3, $00, $00, $00);
-
-    // Player 1 data
-    sreel_p1Frame1 : array[0.._HEIGHT - 1] of byte = 
-        ($00, $00, $00, $E0, $F0, $D8, $88, $DC, $7C, $7C, $DC, $88, $D8, $F0, $E0, $00, $00, $00);
-
-    sreel_p1Frame2 : array[0.._HEIGHT - 1] of byte = 
-        ($00, $00, $00, $C0, $70, $38, $78, $FC, $6C, $44, $EC, $F8, $78, $F4, $C4, $00, $00, $00);
-
-    sreel_p1Frame3 : array[0.._HEIGHT - 1] of byte = 
-        ($00, $00, $00, $EC, $F0, $D8, $88, $DC, $7C, $7C, $DC, $88, $D8, $F0, $E0, $00, $00, $00);
-
-    sreel_p1Frame4 : array[0.._HEIGHT - 1] of byte = 
-        ($00, $00, $00, $C0, $70, $38, $78, $FC, $6C, $44, $EC, $F8, $78, $F0, $C0, $00, $00, $00);
-
-    sreel_pos: array[0.._SIZE - 1] of byte =
-        (0,0,0,0,0,2,2,2,4,4,4,6,6,6,8,8,8,9,9,9,10,10,10,9,9,9,8,8,8,6,6,6,4,4,4,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,2,2,2,4,4,4,6,6,6,8,8,8,9,9,9,10,10,10,9,9,9,8,8,8,6,6,6,4,4,4,0,0,0,0);
-
-    // Player position
-    bike_px0 : byte = 240; bike_py0 : byte = 90;
-    bike_px1 : byte = 247; bike_py1 : byte = 90;
-    
-    bat_px0 : byte = 80; bat_py0 : byte = 24;
-    bat_px1 : byte = 88; bat_py1 : byte = 24;
-
-    sreel_px0 : byte = 100; sreel_py0 : byte = 71;
-    sreel_px1 : byte = 107; sreel_py1 : byte = 71;
-
-    guy_x : byte = 60; guy_y : byte = 68;  // Not used anymore (was for background drawing)
-    guy_oldx : byte; guy_oldy : byte;  // Not used anymore
-    guy_px0 : byte = 80;   // Horizontal position for left sprite (FIXED - no left/right movement)
-    guy_px1 : byte = 88;   // Horizontal position for right sprite (8 pixels right, adjacent)
-    guy_py : byte = 160;   // Vertical position - lower on screen (60 bytes = 60 scanlines, at 160-219)
-    guy_base_py : byte = 160;  // Base Y position (ground level) - this is 'bottom' in Mr. Hoppe
-
-    // Jump physics (Mr. Hoppe variables)
-    sy : smallint = 0;     // Vertical speed (negative = up, positive = down)
-    cy : byte = 0;         // Sub-pixel counter for smooth movement
-    fly : boolean = false; // Is player in the air?
-    jump : boolean = false; // Is player charging jump?
-    jumpforce : byte = 0;  // Jump force being charged (10-70)
-
-    // Obstacles (walls) - using missiles M0-M3
+    // ========================================================================
+    // Obstacles (Walls) - Using Missiles M0-M3
+    // ========================================================================
     wall_x : array[0..3] of byte;      // Horizontal positions of 4 walls
     wall_h : array[0..3] of byte;      // Heights of 4 walls (in pixels)
     wall_wait : array[0..3] of byte;   // Wait time before spawning next wall
     last_wall : byte = 0;              // Spacing between walls
-    difficulty : byte = 0;             // Difficulty level (affects wall spacing)
+    difficulty : byte = 0;             // Difficulty level (increases with score)
 
-    // Game state
+    // ========================================================================
+    // Game State Variables
+    // ========================================================================
     energy : byte = 80;                // Player energy (0-80)
     score : word = 0;                  // Player score
     gameover_flag : boolean = false;   // Game over flag
-damagecount : byte = 0;            // Damage cooldown counter (Mr. Hoppe)
+    damagecount : byte = 0;            // Damage cooldown counter (10 frames)
 
-// Bonus (rolka) sprite - uses Players 2 and 3
-bonus_x : byte = 0;                // Bonus horizontal position
-bonus_wait : byte = 10;            // Wait counter before spawning bonus (10 = not active)
-bonus_wall : byte = 0;             // Which wall the bonus is attached to (0-3)
+    // ========================================================================
+    // Bonus (Rolka) Sprite - Uses Players 2 and 3
+    // ========================================================================
+    bonus_x : byte = 0;                // Bonus horizontal position
+    bonus_wait : byte = 10;            // Wait counter (10 = not active, 0-3 = attached to wall)
+    bonus_wall : byte = 0;             // Which wall the bonus is attached to (0-3)
 
-	fntTable: array [0..29] of byte;
-    //  = (
-	// 	hi(TITLE1_FONT1),hi(TITLE1_FONT1),hi(TITLE1_FONT1),hi(TITLE1_FONT1),hi(TITLE1_FONT1),hi(TITLE1_FONT1),hi(TITLE1_FONT1),hi(TITLE1_FONT1),
-	// 	hi(TITLE1_FONT1),hi(TITLE1_FONT1),hi(TITLE1_FONT2),hi(TITLE1_FONT2),hi(TITLE1_FONT2),hi(TITLE1_FONT2),hi(TITLE1_FONT1),hi(TITLE1_FONT1),
-	// 	hi(TITLE1_FONT1),hi(TITLE1_FONT1),hi(CHARSET_FONT),hi(CHARSET_FONT),hi(CHARSET_FONT),hi(CHARSET_FONT),hi(CHARSET_FONT),hi(CHARSET_FONT),
-	// 	hi(CHARSET_FONT),hi(CHARSET_FONT),hi(CHARSET_FONT),hi(CHARSET_FONT),hi(CHARSET_FONT),hi(CHARSET_FONT)
-	// );
+    // ========================================================================
+    // Title Screen Color Tables
+    // ========================================================================
+	fntTable: array [0..29] of byte;   // Font table (unused, kept for compatibility)
 
 	c0Table: array [0..29] of byte = (
 		$0E,$0E,$0E,$0E,$0E,$0E,$0E,$0E,
@@ -289,8 +137,17 @@ bonus_wall : byte = 0;             // Which wall the bonus is attached to (0-3)
 
 
 
+// ============================================================================
+// Include Files
+// ============================================================================
 {$i interrupts.inc}
 
+// ============================================================================
+// Background Scrolling
+// ============================================================================
+// Sets the horizontal scroll offset for the background
+// Updates display list LMS pointers for smooth scrolling
+// ============================================================================
 procedure setBackgroundOffset(x:word);
 var vram1,vram2:byte;
     line:byte;
@@ -309,70 +166,11 @@ begin
     hscrol := (x and 3) xor 3;
 end;
 
-// procedure Guy_BackSet;
-// // Set remembered back into background 
-// begin
-//     offset_x:=0;
-//     offset_y:=guy_oldy shl 7;
-//     for i:=0 to _GUY_HEIGHT - 1 do
-//     begin
-//         Inc(offset_x,128);
-//         Move(Pointer(GUYBACK_MEM + (i shl 2)), Pointer(BACKGROUND_MEM + offset_x + offset_y + guy_oldx), 4);
-//     end;
-// end;
-
-// Guy_Anim procedure no longer needed - using PMG hardware sprites instead
-// procedure Guy_Anim(f : byte);
-// var
-//     draw_x: word;
-//     old_draw_x: word;
-//     scroll_offset: word;
-//     old_scroll_offset: word;
-// begin
-//     // Calculate scroll offset in bytes (hpos is in pixels, divide by 4 to get bytes)
-//     scroll_offset := hpos shr 2;
-//     old_scroll_offset := guy_oldx shr 2;
-//
-//     offset_x:=0;
-//     offset_y:=guy_y shl 7;
-//
-//     // Player appears at fixed screen position guy_x (e.g., 60 bytes from left edge of screen)
-//     // Memory position = screen_position + scroll_offset
-//     // As we scroll right (hpos increases), we need to draw further right in memory
-//     draw_x := guy_x + scroll_offset;
-//     old_draw_x := guy_x + old_scroll_offset;
-//
-//     for i:=0 to _GUY_HEIGHT - 1 do
-//     begin
-//         Inc(offset_x,128);
-//
-//         // Only restore background if position has changed
-//         if (draw_x <> old_draw_x) then begin
-//             // Restore background at OLD position
-//             Move(Pointer(GUYBACK_MEM + (i shl 2)), Pointer(BACKGROUND_MEM + offset_x + offset_y + old_draw_x), 4);
-//             // Save background at NEW position
-//             Move(Pointer(BACKGROUND_MEM + offset_x + offset_y + draw_x), Pointer(GUYBACK_MEM + (i shl 2)), 4);
-//         end;
-//
-//         // Draw the current animation frame at current position
-//         if f = 1 then
-//             Move(Pointer(GUY1_MEM + (i shl 2)), Pointer(BACKGROUND_MEM + offset_x + offset_y + draw_x), 4);
-//         if f = 2 then
-//             Move(Pointer(GUY2_MEM + (i shl 2)), Pointer(BACKGROUND_MEM + offset_x + offset_y + draw_x), 4);
-//         if f = 3 then
-//             Move(Pointer(GUY3_MEM + (i shl 2)), Pointer(BACKGROUND_MEM + offset_x + offset_y + draw_x), 4);
-//         if f = 4 then
-//             Move(Pointer(GUY4_MEM + (i shl 2)), Pointer(BACKGROUND_MEM + offset_x + offset_y + draw_x), 4);
-//         if f = 5 then
-//             Move(Pointer(GUY5_MEM + (i shl 2)), Pointer(BACKGROUND_MEM + offset_x + offset_y + draw_x), 4);
-//         if f = 6 then
-//             Move(Pointer(GUY6_MEM + (i shl 2)), Pointer(BACKGROUND_MEM + offset_x + offset_y + draw_x), 4);
-//
-//     end;
-//
-//     // Remember the scroll position for next time
-//     guy_oldx := hpos;
-// end;
+// ============================================================================
+// Player Sprite Rendering (PMG Hardware Sprites)
+// ============================================================================
+// NOTE: Old background-based sprite code removed - now using PMG hardware
+// ============================================================================
 
 procedure NextFrame;
 begin
@@ -409,46 +207,14 @@ begin
         Move(guy_p1Frame6, Pointer(PMGBASE + 1280 + guy_py), _GUY_HEIGHT);
        end;
   end;
-
-  // Draw enemies based on frame (1-4)
-  // NOTE: Bat and reel DISABLED - they share Players 0&1 with guy and cause overlap
-  // Only drawing player sprite for now
-  {
-  if frame = 1 then begin
-    // bat - uses Players 0 and 1 (same as guy)
-    Move(bat_p0Frame1, Pointer(PMGBASE + 512 + 0 + bat_py0 + bat_pos[i]), _HEIGHT);
-    Move(bat_p1Frame1, Pointer(PMGBASE + 512 + 128 + bat_py1 + bat_pos[i]), _HEIGHT);
-
-    // small reel - uses Players 0 and 1 (same as guy)
-    Move(sreel_p0Frame1, Pointer(PMGBASE + 512 + 0 + sreel_py0 - sreel_pos[i]), _HEIGHT);
-    Move(sreel_p1Frame1, Pointer(PMGBASE + 512 + 128 + sreel_py1 - sreel_pos[i]), _HEIGHT);
-  end
-  else if frame = 2 then begin
-    // bat
-    Move(bat_p0Frame2, Pointer(PMGBASE + 512 + 0 + bat_py0 + bat_pos[i]), _HEIGHT);
-    Move(bat_p1Frame2, Pointer(PMGBASE + 512 + 128 + bat_py1 + bat_pos[i]), _HEIGHT);
-
-    //small reel
-    Move(sreel_p0Frame2, Pointer(PMGBASE + 512 + 0 + sreel_py0 - sreel_pos[i]), _HEIGHT);
-    Move(sreel_p1Frame2, Pointer(PMGBASE + 512 + 128 + sreel_py1 - sreel_pos[i]), _HEIGHT);
-  end
-  else if frame = 3 then begin
-    Move(bat_p0Frame3, Pointer(PMGBASE + 512 + 0 + bat_py0 + bat_pos[i]), _HEIGHT);
-    Move(bat_p1Frame3, Pointer(PMGBASE + 512 + 128 + bat_py1 + bat_pos[i]), _HEIGHT);
-
-    Move(sreel_p0Frame3, Pointer(PMGBASE + 512 + 0 + sreel_py0 - sreel_pos[i]), _HEIGHT);
-    Move(sreel_p1Frame3, Pointer(PMGBASE + 512 + 128 + sreel_py1 - sreel_pos[i]), _HEIGHT);
-  end
-  else if frame = 4 then begin
-    Move(bat_p0Frame4, Pointer(PMGBASE + 512 + 0 + bat_py0 + bat_pos[i]), _HEIGHT);
-    Move(bat_p1Frame4, Pointer(PMGBASE + 512 + 128 + bat_py1 + bat_pos[i]), _HEIGHT);
-
-    Move(sreel_p0Frame4, Pointer(PMGBASE + 512 + 0 + sreel_py0 - sreel_pos[i]), _HEIGHT);
-    Move(sreel_p1Frame4, Pointer(PMGBASE + 512 + 128 + sreel_py1 - sreel_pos[i]), _HEIGHT);
-  end;
-  }
-
 end;
+
+// ============================================================================
+// Jump Physics (Mr. Hoppe Algorithm)
+// ============================================================================
+// Handles variable-height jumping with sub-pixel precision
+// Based on Mr. Hoppe's exact physics implementation
+// ============================================================================
 
 procedure Update_Jump;
 begin
@@ -823,10 +589,9 @@ begin
         Nextframe;
 
         // Set PMG horizontal positions (FIXED - no left/right movement)
-        hposp[0]:=guy_px0;  // Player sprite 0
-        hposp[1]:=guy_px1;  // Player sprite 1
-        hposp[2]:=bat_px0;  // Enemy bat sprite 0 (disabled)
-        hposp[3]:=bat_px1;  // Enemy bat sprite 1 (disabled)
+        hposp[0]:=guy_px0;  // Player sprite 0 (left half of player)
+        hposp[1]:=guy_px1;  // Player sprite 1 (right half of player)
+        // NOTE: hposp[2] and hposp[3] are set in UpdateBonus procedure (bonus sprite)
 
         // AUTO-RUN: Background scrolls automatically from left to right
         if (hpos < 339) then begin
@@ -854,6 +619,8 @@ begin
 end;
 
 procedure title;
+var
+    i: byte;
 begin
     SetCharset (Hi(CHARSET_FONT)); // when system is off
     CRT_Init(TITLEBACK_MEM);
@@ -889,9 +656,11 @@ begin
 end;
 
 procedure endgame;
+var
+    i: byte;
 begin
-    
-    
+
+
     Move(Pointer(TITLE2_SCREEN), Pointer(TITLEBACK_MEM),$280);
     for i:=0 to 17 do
         fntTable[i]:=hi(TITLE2_FONT1);
@@ -979,8 +748,10 @@ begin
 
     // Missile sizes (double width for thicker walls)
     sizem := $ff;  // All missiles double width
-    hposp[2] := bat_px0;
-    hposp[3] := bat_px1;
+
+    // Players 2 and 3 are used for bonus sprite (set in UpdateBonus procedure)
+    hposp[2] := 0;
+    hposp[3] := 0;
     
     music:=true;
 
