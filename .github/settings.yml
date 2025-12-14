@@ -1,0 +1,8 @@
+# GitHub Pages settings
+pages:
+  # Build and deployment settings
+  build_type: workflow
+  # The branch to deploy from
+  source_branch: main
+  # The directory to deploy from
+  source_dir: /sprite-editor/dist
