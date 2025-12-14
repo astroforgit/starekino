@@ -37,9 +37,9 @@ DL_JVB = %01000001; // Jump to begining
 
 ; and declare display list itself
 
-; example (BASIC mode 0 + display list interrupt at top):
+; Display list with text mode at top (EXACT Mr. Hoppe structure)
 dl_start
-  dta $70, $70, $70, $f0, $70, $70, $5f, a($6000), $5f, a($6080)
+  dta $f0, $30, $42, a(TEXT_SCREEN), $30, $5f, a($6000), $5f, a($6080)
   dta $5f, a($6100), $5f, a($6180), $5f, a($6200), $5f, a($6280), $5f, a($6300)
   dta $5f, a($6380), $5f, a($6400), $5f, a($6480), $5f, a($6500), $5f, a($6580)
   dta $5f, a($6600), $5f, a($6680), $5f, a($6700), $5f, a($6780), $5f, a($6800)

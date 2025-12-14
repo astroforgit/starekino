@@ -8,6 +8,7 @@ FREE_BOTTOM = $6000;  // and sometimes I like to do some relative addressing
 DISPLAY_LIST_ADDRESS = FREE_BOTTOM - $200;
 TITLE_LIST_ADDRESS = DISPLAY_LIST_ADDRESS - $200;
 
+TEXT_SCREEN = $5B00;  // Text screen for energy bar at top (40 bytes)
 BACKGROUND_MEM = $6000;
 
 RMT_PLAYER_ADDRESS = $A400;

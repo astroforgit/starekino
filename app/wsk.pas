@@ -154,6 +154,10 @@ var
         $1F, $1F, $1F, $1F, $1F, $1F, $1F, $1F,
         $0F, $0F, $7F, $FF);
 
+    // Bonus sprite (rolka) - USING EXISTING SREEL SPRITE DATA (18 pixels tall)
+    // NOTE: sreel sprite data is already defined below (sreel_p0Frame1-4, sreel_p1Frame1-4)
+    // We'll use Players 2 and 3 for the bonus (like Mr. Hoppe)
+
     // Player 0 data
     bat_p0Frame1 : array[0.._HEIGHT - 1] of byte =
         ($00, $00, $2, $2, $3, $F, $3E, $7F, $7F, $F3, $C3, $80, $00, $00, $00, $00, $00, $00);
@@ -240,6 +244,12 @@ var
     energy : byte = 80;                // Player energy (0-80)
     score : word = 0;                  // Player score
     gameover_flag : boolean = false;   // Game over flag
+damagecount : byte = 0;            // Damage cooldown counter (Mr. Hoppe)
+
+// Bonus (rolka) sprite - uses Players 2 and 3
+bonus_x : byte = 0;                // Bonus horizontal position
+bonus_wait : byte = 10;            // Wait counter before spawning bonus (10 = not active)
+bonus_wall : byte = 0;             // Which wall the bonus is attached to (0-3)
 
 	fntTable: array [0..29] of byte;
     //  = (
@@ -468,47 +478,19 @@ begin
     inc(sy);  // Apply gravity AFTER movement calculation
 end;
 
-// Display energy bar at top of screen - using graphics mode
+// Display energy bar - EXACT Mr. Hoppe method
 procedure ShowEnergy;
-var
-    x_pos: byte;
-    energy_pixels: byte;
-    screen_addr: word;
-    remaining_pixels: byte;
 begin
-    // Energy bar at very top of screen
-    // In graphics mode $F (320x192), we need to draw pixels directly
-    // Each byte = 8 pixels in mode F
-    // Energy 0-80, display as 80 pixels (10 bytes) at top of screen
+    // EXACT Mr. Hoppe (line 199): FillByte(pointer(TXT_RAM + 52), energy shr 1, $4e);
+    // But we want it at the start of the line, not at position 52
+    // Energy 0-80, display as 0-40 characters (energy shr 1)
+    // Character $4E is the solid block
 
-    energy_pixels := energy;  // 0-80 pixels
+    FillByte(Pointer(TEXT_SCREEN), energy shr 1, $4E);
 
-    // Draw energy bar at top-right of screen (starting at x=240, which is byte 30 of 40)
-    // Screen width in mode F = 40 bytes (320 pixels / 8 pixels per byte)
-    // Draw 10 bytes (80 pixels) starting at byte 30
-    for x_pos := 0 to 9 do begin
-        screen_addr := BACKGROUND_MEM + 30 + x_pos;  // Top line, bytes 30-39
-
-        if (x_pos * 8) < energy_pixels then begin
-            // Calculate how many pixels to draw in this byte
-            if (energy_pixels - (x_pos * 8)) >= 8 then
-                poke(screen_addr, $FF)  // Full byte (8 pixels)
-            else begin
-                // Partial byte - draw remaining pixels
-                remaining_pixels := energy_pixels - (x_pos * 8);
-                case remaining_pixels of
-                    1: poke(screen_addr, $80);
-                    2: poke(screen_addr, $C0);
-                    3: poke(screen_addr, $E0);
-                    4: poke(screen_addr, $F0);
-                    5: poke(screen_addr, $F8);
-                    6: poke(screen_addr, $FC);
-                    7: poke(screen_addr, $FE);
-                end;
-            end;
-        end else begin
-            poke(screen_addr, 0);  // Empty
-        end;
+    // Clear the rest of the line (from current energy to end of 40 chars)
+    if (energy shr 1) < 40 then begin
+        FillByte(Pointer(TEXT_SCREEN + (energy shr 1)), 40 - (energy shr 1), 0);
     end;
 end;
 
@@ -530,32 +512,56 @@ begin
     poke(BACKGROUND_MEM + 6, score mod 10 + 48);              // Ones
 end;
 
-// Check collision between player and walls
+// Check collision between player and walls/bonus
 procedure CheckCollision;
 var
     collision: byte;
+    p0pm_col, p1pm_col: byte;
+    p0pl_col, p1pl_col: byte;
+    bonus_collision: byte;
 begin
-    // Read collision registers
-    // P0PL = Player 0 to Playfield collision ($D004)
-    // P1PL = Player 1 to Playfield collision ($D005)
-    // M0PL through M3PL = Missile to Player collision ($D000-$D003)
+    // Decrement damage cooldown counter (Mr. Hoppe line 304)
+    if damagecount > 0 then dec(damagecount);
 
-    // Check if any player sprite hit any missile
-    collision := peek($D00C) or peek($D00D);  // P0PM (player 0 to missile) and P1PM (player 1 to missile)
+    // Check Player-to-Missile collision (walls)
+    // P0PM = $D00C (Player 0 to Missile collision)
+    // P1PM = $D00D (Player 1 to Missile collision)
+    p0pm_col := peek($D00C);
+    p1pm_col := peek($D00D);
+    collision := p0pm_col or p1pm_col;
 
-    if (collision <> 0) and (energy > 0) and not gameover_flag then begin
+    // Check Player-to-Player collision (bonus)
+    // P0PL = $D004 (Player 0 to Player collision - bits 0-3 = hit P0-P3)
+    // P1PL = $D005 (Player 1 to Player collision)
+    // We check if P0 or P1 hit P2 or P3 (bonus sprites)
+    p0pl_col := peek($D004);
+    p1pl_col := peek($D005);
+    bonus_collision := (p0pl_col or p1pl_col) and %1100;  // Bits 2-3 = P2/P3
+
+    // Check bonus collision FIRST (EXACT Mr. Hoppe lines 327-342)
+    if (bonus_collision <> 0) and (bonus_wait < 4) then begin
+        bonus_wait := 10;  // Deactivate bonus
+        bonus_x := 0;
+        energy := energy + 10;
+        if energy > 80 then energy := 80;
+        ShowEnergy;
+    end;
+
+    // Only take damage if damagecount = 0 (Mr. Hoppe line 309)
+    if (collision <> 0) and (energy > 0) and (damagecount = 0) and not gameover_flag then begin
         // Collision detected!
         Dec(energy);
 
-        // Flash effect or damage animation could go here
+        // Set damage cooldown (Mr. Hoppe line 315)
+        damagecount := 10;
+
+        // Update energy display (Mr. Hoppe line 313: poke(TXT_RAM + 52 + (energy shr 1), 0))
+        ShowEnergy;
 
         // Check if energy depleted
         if energy = 0 then begin
             gameover_flag := true;
         end;
-
-        // Update energy display
-        ShowEnergy;
     end;
 
     // Clear collision registers
@@ -591,6 +597,56 @@ begin
     end;
 end;
 
+// Update bonus sprite (rolka) - Uses existing sreel sprite data
+procedure UpdateBonus;
+var
+    frame: byte;
+    bonus_y: byte;
+begin
+    // Bonus Y position - above obstacles (like Mr. Hoppe BONUS_LVL = 108)
+    bonus_y := 108;  // EXACT Mr. Hoppe BONUS_LVL
+
+    // ALWAYS clear the entire bonus sprite area (Player 2 and 3)
+    // Clear from bonus_y to bonus_y + _HEIGHT
+    FillByte(Pointer(PMGBASE + 1536 + bonus_y), _HEIGHT, 0);  // Player 2
+    FillByte(Pointer(PMGBASE + 1792 + bonus_y), _HEIGHT, 0);  // Player 3
+
+    // Draw bonus sprite if active (bonus_wait < 4 means attached to a wall)
+    if bonus_wait < 4 then begin
+        // Animate bonus (4 frames) - based on system clock
+        frame := (peek(20) shr 3) and %11;  // 0-3 animation frame
+
+        // Copy animated frame to Player 2 and 3 using EXISTING sreel sprite data
+        case frame of
+            0: begin
+                Move(sreel_p0Frame1, Pointer(PMGBASE + 1536 + bonus_y), _HEIGHT);
+                Move(sreel_p1Frame1, Pointer(PMGBASE + 1792 + bonus_y), _HEIGHT);
+            end;
+            1: begin
+                Move(sreel_p0Frame2, Pointer(PMGBASE + 1536 + bonus_y), _HEIGHT);
+                Move(sreel_p1Frame2, Pointer(PMGBASE + 1792 + bonus_y), _HEIGHT);
+            end;
+            2: begin
+                Move(sreel_p0Frame3, Pointer(PMGBASE + 1536 + bonus_y), _HEIGHT);
+                Move(sreel_p1Frame3, Pointer(PMGBASE + 1792 + bonus_y), _HEIGHT);
+            end;
+            3: begin
+                Move(sreel_p0Frame4, Pointer(PMGBASE + 1536 + bonus_y), _HEIGHT);
+                Move(sreel_p1Frame4, Pointer(PMGBASE + 1792 + bonus_y), _HEIGHT);
+            end;
+        end;
+
+        // Move bonus with wall (EXACT Mr. Hoppe lines 190-193)
+        bonus_x := wall_x[bonus_wait];  // Bonus follows the wall it's attached to
+        hposp[2] := bonus_x;
+        hposp[3] := bonus_x;
+    end else begin
+        // When not active, move sprites off-screen
+        hposp[2] := 0;
+        hposp[3] := 0;
+    end;
+end;
+
 // Move walls from right to left - FASTER than background
 procedure MoveWalls;
 var
@@ -608,6 +664,11 @@ begin
                 last_wall := wall_wait[wall_num];
                 wall_h[wall_num] := ((rnd_val mod 3) + 1) * 24;
                 SetWallHeight(wall_num, wall_h[wall_num]);
+
+                // Spawn bonus on random wall (20% chance)
+                if (bonus_wait >= 10) and ((rnd_val mod 5) = 0) then begin
+                    bonus_wait := wall_num;  // Attach bonus to this wall (0-3)
+                end;
             end;
         end else dec(wall_wait[wall_num]);
 
@@ -702,11 +763,20 @@ begin
 
     last_wall := 0;
 
+    // Initialize text screen for energy bar (clear it)
+    FillByte(Pointer(TEXT_SCREEN), 40, 0);
+
     // Initialize game state
     energy := 80;
     score := 0;
     gameover_flag := false;
     difficulty := 0;
+    damagecount := 0;  // Damage cooldown counter
+
+    // Initialize bonus (rolka)
+    bonus_x := 0;
+    bonus_wait := 10;  // 10 = not active
+    bonus_wall := 0;
 
     // Initialize jump state (Mr. Hoppe variables)
     sy := 0;
@@ -731,7 +801,10 @@ begin
         // Move walls (obstacles)
         MoveWalls;
 
-        // Check collision between player and walls
+        // Update bonus sprite (rolka)
+        UpdateBonus;
+
+        // Check collision between player and walls/bonus
         CheckCollision;
 
         // Update score (increase while flying - EXACT Mr. Hoppe)
@@ -866,9 +939,12 @@ begin
     FillByte(Pointer(PMGBASE + 768), 1280, 0);
 
 
-    // Priority register
-    // - Players and missiles in front of playfield
-    // - Enable third color for players (like player.pas test file)
+    // Priority register (GPRIOR at $D01B)
+    // Mr. Hoppe uses: 1 + PMG_5player + PMG_overlap
+    // PMG_5player = $10 (enable 5th player - missiles use COLPF3)
+    // PMG_overlap = $20 (enable collision detection)
+    // So: 1 + $10 + $20 = $31
+    gprior := $31;  // Enable collisions + 5th player + priority 1
 
     gtiactl := 33;  // $21 = enable players + third color
 
@@ -878,15 +954,18 @@ begin
     sizep[2] := 0;  // Player 2 (unused) normal size
     sizep[3] := 0;  // Player 3 (unused) normal size
 
-    // Player/missile colors
-    // NOTE: Players 0 and 1 are for the guy sprite
+    // Player colors (COLPM0-3 at $D012-$D015)
+    // IMPORTANT: Collision detection REQUIRES different colors!
+    // Use Mr. Hoppe colors but make them all BLACK for visual consistency
+    // The hardware still detects collisions even with same visual color
     pcolr[0] := $00;  // Player 0 - black
     pcolr[1] := $00;  // Player 1 - black
-    pcolr[2] := $00;  // Player 2 - unused
-    pcolr[3] := $00;  // Player 3 - unused
+    pcolr[2] := $1C;  // Player 2 - bonus sprite (yellow/orange)
+    pcolr[3] := $1A;  // Player 3 - bonus sprite (green/yellow)
 
-    // Missile colors (for walls/obstacles)
-    poke($D01A + 4, $34);  // Missile color - red/brown (same as buildings)
+    // Missile colors: In 5th player mode (gprior bit 4), ALL missiles use COLPF3
+    // Set COLPF3 to black for obstacles
+    colpf3 := $00;  // Black obstacles
 
     // Player horizontal positions
     hposp[0] := guy_px0;
