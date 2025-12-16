@@ -59,6 +59,12 @@ let currentAnimationFrame = 0;
 let isAnimationPlaying = false;
 let currentAnimationGroup = null;
 
+// Pixel buffers for preserving pixels during shifts
+let leftPixelBuffer = [];
+let rightPixelBuffer = [];
+let topPixelBuffer = [];
+let bottomPixelBuffer = [];
+
 function init() {
     canvas = document.getElementById('spriteCanvas');
     ctx = canvas.getContext('2d');
@@ -99,9 +105,46 @@ function init() {
     // Load first sprite
     loadSprite('player', 'guy_p0Frame1');
 
-    // Canvas click handlers
-    canvas.addEventListener('click', handleCanvasClick);
-    canvas2.addEventListener('click', handleCanvas2Click);
+    // Canvas event handlers for continuous drawing
+    let isDrawing = false;
+
+    canvas.addEventListener('mousedown', (e) => {
+        isDrawing = true;
+        handleCanvasClick(e);
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+        if (isDrawing) {
+            handleCanvasClick(e);
+        }
+    });
+
+    canvas.addEventListener('mouseup', () => {
+        isDrawing = false;
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+        isDrawing = false;
+    });
+
+    canvas2.addEventListener('mousedown', (e) => {
+        isDrawing = true;
+        handleCanvas2Click(e);
+    });
+
+    canvas2.addEventListener('mousemove', (e) => {
+        if (isDrawing) {
+            handleCanvas2Click(e);
+        }
+    });
+
+    canvas2.addEventListener('mouseup', () => {
+        isDrawing = false;
+    });
+
+    canvas2.addEventListener('mouseleave', () => {
+        isDrawing = false;
+    });
 
     // Color picker
     document.getElementById('colorPicker').addEventListener('change', () => {
@@ -515,7 +558,7 @@ function handleCanvasClick(e) {
     const y = Math.floor((e.clientY - rect.top) / pixelSize);
 
     if (x >= 0 && x < 8 && y >= 0 && y < currentData.length) {
-        // Toggle bit
+        // Toggle bit (XOR operation) - allows drawing on both black and white pixels
         const bitMask = 1 << (7 - x);
         currentData[y] ^= bitMask;
 
@@ -537,7 +580,7 @@ function handleCanvas2Click(e) {
     const y = Math.floor((e.clientY - rect.top) / pixelSize);
 
     if (x >= 0 && x < 8 && y >= 0 && y < pairedData.length) {
-        // Toggle bit
+        // Toggle bit (XOR operation) - allows drawing on both black and white pixels
         const bitMask = 1 << (7 - x);
         pairedData[y] ^= bitMask;
 
@@ -573,8 +616,21 @@ function invertSprite() {
 
 function shiftLeft() {
     if (!currentData) return;
-    currentData = currentData.map(byte => ((byte << 1) | (byte >> 7)) & 0xFF);
+
+    // Store pixels that will be shifted out (rightmost bits)
+    rightPixelBuffer = currentData.map(byte => (byte & 0x01) ? 1 : 0);
+
+    // Shift left, bringing in pixels from left buffer (or black if empty)
+    currentData = currentData.map((byte, index) => {
+        const leftBit = leftPixelBuffer.length > 0 ? (leftPixelBuffer[index] << 7) : 0;
+        return ((byte << 1) & 0xFF) | leftBit;
+    });
+
+    // Clear left buffer since we used those pixels
+    leftPixelBuffer = [];
+
     sprites[currentSprite.category][currentSprite.name] = [...currentData];
+
     drawSprite();
     updateExportData();
     drawIndividualPreviews();
@@ -583,8 +639,21 @@ function shiftLeft() {
 
 function shiftRight() {
     if (!currentData) return;
-    currentData = currentData.map(byte => ((byte >> 1) | (byte << 7)) & 0xFF);
+
+    // Store pixels that will be shifted out (leftmost bits)
+    leftPixelBuffer = currentData.map(byte => (byte & 0x80) ? 1 : 0);
+
+    // Shift right, bringing in pixels from right buffer (or black if empty)
+    currentData = currentData.map((byte, index) => {
+        const rightBit = rightPixelBuffer.length > 0 ? rightPixelBuffer[index] : 0;
+        return ((byte >> 1) & 0xFF) | rightBit;
+    });
+
+    // Clear right buffer since we used those pixels
+    rightPixelBuffer = [];
+
     sprites[currentSprite.category][currentSprite.name] = [...currentData];
+
     drawSprite();
     updateExportData();
     drawIndividualPreviews();
@@ -593,9 +662,19 @@ function shiftRight() {
 
 function shiftUp() {
     if (!currentData) return;
-    const first = currentData.shift();
-    currentData.push(first);
+
+    // Store the bottom row pixels that will be shifted out
+    bottomPixelBuffer = [...currentData.slice(-1)];
+
+    // Shift up, bringing in pixels from top buffer (or black row if empty)
+    const topRow = topPixelBuffer.length > 0 ? [...topPixelBuffer] : new Array(8).fill(0);
+    currentData = [...topRow, ...currentData.slice(0, -1)];
+
+    // Clear top buffer since we used those pixels
+    topPixelBuffer = [];
+
     sprites[currentSprite.category][currentSprite.name] = [...currentData];
+
     drawSprite();
     updateExportData();
     drawIndividualPreviews();
@@ -604,13 +683,66 @@ function shiftUp() {
 
 function shiftDown() {
     if (!currentData) return;
-    const last = currentData.pop();
-    currentData.unshift(last);
+
+    // Store the top row pixels that will be shifted out
+    topPixelBuffer = [...currentData.slice(0, 1)];
+
+    // Shift down, bringing in pixels from bottom buffer (or black row if empty)
+    const bottomRow = bottomPixelBuffer.length > 0 ? [...bottomPixelBuffer] : new Array(8).fill(0);
+    currentData = [...currentData.slice(1), ...bottomRow];
+
+    // Clear bottom buffer since we used those pixels
+    bottomPixelBuffer = [];
+
     sprites[currentSprite.category][currentSprite.name] = [...currentData];
+
     drawSprite();
     updateExportData();
     drawIndividualPreviews();
     drawAnimationPreview();
+}
+
+// Zoom functions
+function zoomIn() {
+    pixelSize = Math.min(pixelSize + 2, 20); // Max zoom: 20px
+    if (currentData) {
+        canvas.width = 8 * pixelSize;
+        canvas.height = currentData.length * pixelSize;
+        drawSprite();
+    }
+    if (pairedData && pairedData.length > 0) {
+        canvas2.width = 8 * pixelSize;
+        canvas2.height = pairedData.length * pixelSize;
+        drawPairedSprite();
+    }
+}
+
+function zoomOut() {
+    pixelSize = Math.max(pixelSize - 2, 4); // Min zoom: 4px
+    if (currentData) {
+        canvas.width = 8 * pixelSize;
+        canvas.height = currentData.length * pixelSize;
+        drawSprite();
+    }
+    if (pairedData && pairedData.length > 0) {
+        canvas2.width = 8 * pixelSize;
+        canvas2.height = pairedData.length * pixelSize;
+        drawPairedSprite();
+    }
+}
+
+function resetZoom() {
+    pixelSize = 8; // Default zoom
+    if (currentData) {
+        canvas.width = 8 * pixelSize;
+        canvas.height = currentData.length * pixelSize;
+        drawSprite();
+    }
+    if (pairedData && pairedData.length > 0) {
+        canvas2.width = 8 * pixelSize;
+        canvas2.height = pairedData.length * pixelSize;
+        drawPairedSprite();
+    }
 }
 
 function updateExportData() {
@@ -724,3 +856,12 @@ function exportAllSprites() {
 // Initialize on load
 window.addEventListener('load', init);
 
+// Expose functions to global scope for HTML button handlers
+window.clearSprite = clearSprite;
+window.invertSprite = invertSprite;
+window.shiftLeft = shiftLeft;
+window.shiftRight = shiftRight;
+window.shiftUp = shiftUp;
+window.shiftDown = shiftDown;
+window.exportCurrentSprite = exportCurrentSprite;
+window.exportAllSprites = exportAllSprites;
